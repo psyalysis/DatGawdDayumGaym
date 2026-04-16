@@ -1053,11 +1053,15 @@ class LobbyManager:
                 lobby_id, {"type": "lobby_update", "lobby": snap_after}
             )
 
+        await self._maybe_finalize_voting(lobby_id)
+
+    async def _maybe_finalize_voting(self, lobby_id: str) -> bool:
+        """If every required voter has cast, cancel the collector and finalize. Used by cast_vote and disconnect."""
         should_finalize = False
         async with self._lock:
             lobby = self.lobbies.get(lobby_id)
-            if not lobby:
-                return
+            if not lobby or lobby.state != LobbyState.VOTING:
+                return False
             beat_owners = set(lobby.uploaded)
             req = required_voters(lobby, beat_owners)
             if req.issubset(lobby.votes.keys()):
@@ -1066,6 +1070,8 @@ class LobbyManager:
                 should_finalize = True
         if should_finalize:
             await finalize_results(self, lobby_id)
+            return True
+        return False
 
     def _delete_lobby_upload_dir_only(self, lobby_id: str) -> None:
         t = self._cook_tasks.pop(lobby_id, None)
@@ -1211,6 +1217,10 @@ class LobbyManager:
                 "name": left_name,
             },
         )
+
+        if state_after == LobbyState.VOTING:
+            if await self._maybe_finalize_voting(lobby_id):
+                state_after = LobbyState.RESULTS
 
         if state_after == LobbyState.RESULTS and left_count > 0:
             rematch_voted: list[str] = []

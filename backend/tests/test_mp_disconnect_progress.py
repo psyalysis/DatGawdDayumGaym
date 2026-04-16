@@ -11,6 +11,47 @@ from backend.multiplayer.lobby import Lobby, LobbyState, Player
 from backend.multiplayer.manager import LobbyManager
 
 
+def test_disconnect_voting_finalizes_when_only_non_voter_left(tmp_path: Path) -> None:
+    """If everyone required to vote has voted and the last holdout disconnects, go to results."""
+
+    async def run() -> None:
+        mgr = LobbyManager(tmp_path)
+        lid = "VOTEF1NAL"
+        p1, p2, p3 = "voteP1xxx", "voteP2xxx", "voteP3xxx"
+        lobby = Lobby(id=lid, spice=0.25, is_public=True)
+        lobby.state = LobbyState.VOTING
+        lobby.votes_unlock_at = time.time() - 1.0
+        lobby.players[p1] = Player(id=p1, name="A", user_id=10, wins=0)
+        lobby.players[p2] = Player(id=p2, name="B", user_id=20, wins=0)
+        lobby.players[p3] = Player(id=p3, name="C", user_id=30, wins=0)
+        lobby.uploaded = {p1, p2, p3}
+        lobby.votes = {p1: p2, p2: p1}
+        mgr.lobbies[lid] = lobby
+        mgr.player_lobby[p1] = lid
+        mgr.player_lobby[p2] = lid
+        mgr.player_lobby[p3] = lid
+
+        class FakeWS:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            async def send_text(self, raw: str) -> None:
+                self.sent.append(raw)
+
+        ws1 = FakeWS()
+        ws2 = FakeWS()
+        mgr.attach_ws(p1, ws1)  # type: ignore[arg-type]
+        mgr.attach_ws(p2, ws2)  # type: ignore[arg-type]
+
+        await mgr.disconnect(p3)
+
+        assert lobby.state == LobbyState.RESULTS
+        payloads = [json.loads(s) for s in ws1.sent + ws2.sent]
+        assert any(p.get("type") == "results" for p in payloads)
+
+    asyncio.run(run())
+
+
 def test_lobby_snapshot_includes_progress_fields() -> None:
     lobby = Lobby(id="AB12CD", spice=0.5, is_public=True)
     lobby.state = LobbyState.VOTING
