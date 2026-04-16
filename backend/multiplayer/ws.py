@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from ..auth import try_validate_ws_token
+from ..auth import redeem_ws_ticket, try_validate_ws_token
 
 from .ws_rate_limit import SlidingWindowRateLimiter
 
@@ -49,7 +49,14 @@ async def multiplayer_ws(websocket: WebSocket) -> None:
         return
 
     token = websocket.query_params.get("token")
-    auth, auth_reason = await asyncio.to_thread(try_validate_ws_token, token)
+
+    ticket_result = await asyncio.to_thread(redeem_ws_ticket, token or "")
+    if ticket_result is not None:
+        auth = ticket_result
+        auth_reason = None
+    else:
+        auth, auth_reason = await asyncio.to_thread(try_validate_ws_token, token)
+
     if auth is None:
         _log_ws("ws_auth_failed", reason=auth_reason, client_host=client_host)
         await websocket.close(code=4401)

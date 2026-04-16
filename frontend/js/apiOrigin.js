@@ -61,24 +61,60 @@ export function getApiBase() {
 const WS_TOKEN_KEY = "cookup_token";
 
 /**
+ * Fetch a short-lived, single-use WS ticket from the server.
+ * Returns the ticket string, or null if the request fails.
+ */
+export async function fetchWsTicket() {
+  try {
+    const t = localStorage.getItem(WS_TOKEN_KEY)?.trim();
+    if (!t) return null;
+    const res = await fetch(`${getApiBase()}/api/ws-ticket`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${t}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.ticket || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * MP socket; same host as API, ?token= when you're signed in.
- * @param {{ resumePlayerId?: string }} [opts]
+ * @param {{ resumePlayerId?: string, ticket?: string }} [opts]
  */
 export function getWsUrl(opts = {}) {
   const u = new URL(getApiBase());
   const proto = u.protocol === "https:" ? "wss:" : "ws:";
   const base = `${proto}//${u.host}/ws`;
   const resume = String(opts.resumePlayerId || "").trim();
-  try {
-    const t = localStorage.getItem(WS_TOKEN_KEY)?.trim();
-    if (t) {
-      let q = `token=${encodeURIComponent(t)}`;
-      if (resume) q += `&resume_player_id=${encodeURIComponent(resume)}`;
-      return `${base}?${q}`;
+
+  // Prefer short-lived ticket over long-lived JWT
+  const tokenValue = opts.ticket || (() => {
+    try {
+      return localStorage.getItem(WS_TOKEN_KEY)?.trim() || "";
+    } catch {
+      return "";
     }
-  } catch {
-    /* ignore */
+  })();
+
+  if (tokenValue) {
+    let q = `token=${encodeURIComponent(tokenValue)}`;
+    if (resume) q += `&resume_player_id=${encodeURIComponent(resume)}`;
+    return `${base}?${q}`;
   }
   if (resume) return `${base}?resume_player_id=${encodeURIComponent(resume)}`;
   return base;
 }
+
+/**
+ * Convenience: fetch a WS ticket, then build the URL with it.
+ * Falls back to JWT if the ticket fetch fails.
+ * @param {{ resumePlayerId?: string }} [opts]
+ */
+export async function getWsUrlWithTicket(opts = {}) {
+  const ticket = await fetchWsTicket();
+  return getWsUrl({ ...opts, ticket: ticket || undefined });
+}
+
