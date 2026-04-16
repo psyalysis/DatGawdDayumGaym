@@ -43,7 +43,7 @@ VOTING_COLLECT_S = 60
 LOBBY_RESULTS_TTL_S = 3600
 
 # Max players per lobby (join + server browser).
-MAX_LOBBY_PLAYERS = 8
+MAX_LOBBY_PLAYERS = 10
 
 
 # These are all of the states which a lobby can go in, in chronological order :)
