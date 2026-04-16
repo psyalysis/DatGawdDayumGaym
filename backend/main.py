@@ -41,7 +41,7 @@ from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .auth import get_current_user, login_user, register_user
+from .auth import create_ws_ticket, get_current_user, login_user, register_user
 from .beat_upload_trim import trim_beat_upload_to_ogg
 from .database import get_db, init_db
 from .generator import generate_kit_light
@@ -51,6 +51,7 @@ from .models import SiteStats, Supporter, User
 from .multiplayer import LobbyManager
 from .multiplayer.lobby import LobbyState
 from .multiplayer.ws import router as ws_router
+from .multiplayer.ws_rate_limit import SlidingWindowRateLimiter
 from .rank import rank_for_wins, rank_index_for_wins, rank_public_dict
 from .schemas import (
     LeaderboardEntry,
@@ -150,9 +151,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Beat Battle", version="1.0.0", lifespan=lifespan)
 
+_CORS_ORIGINS: list[str] = [
+    "https://beat-battle.net",
+    "https://www.beat-battle.net",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+]
+_extra_cors = os.environ.get("COOKUP_CORS_ORIGINS", "").strip()
+if _extra_cors:
+    _CORS_ORIGINS.extend(o.strip() for o in _extra_cors.split(",") if o.strip())
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -189,6 +200,9 @@ class StaticCacheControlMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(StaticCacheControlMiddleware)
+
+_LOGIN_LIMIT = SlidingWindowRateLimiter(max_events=10, window_s=60.0)
+_REGISTER_LIMIT = SlidingWindowRateLimiter(max_events=5, window_s=60.0)
 
 app.include_router(ws_router)
 
@@ -301,14 +315,34 @@ def delete_dev_supporter(
 
 @app.post("/register", response_model=RegisterResponse)
 def post_register(
-    body: RegisterRequest, db: Session = Depends(get_db)
+    request: Request, body: RegisterRequest, db: Session = Depends(get_db)
 ) -> RegisterResponse:
+    ip = (request.client.host if request.client else "unknown")
+    if not _REGISTER_LIMIT.check(f"reg:{ip}"):
+        raise HTTPException(status_code=429, detail="Too many registrations. Try again later.")
     return register_user(db, body)
 
 
 @app.post("/login", response_model=TokenResponse)
-def post_login(body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def post_login(
+    request: Request, body: LoginRequest, db: Session = Depends(get_db)
+) -> TokenResponse:
+    ip = (request.client.host if request.client else "unknown")
+    if not _LOGIN_LIMIT.check(f"login:{ip}"):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
     return login_user(db, body)
+
+
+@app.post("/api/ws-ticket")
+def post_ws_ticket(user: User = Depends(get_current_user)) -> dict[str, str]:
+    """Issue a short-lived, single-use ticket for WebSocket auth.
+
+    The frontend calls this before opening a WS connection, then passes the
+    ticket as ``?token=...`` instead of the long-lived JWT.  Even if the URL
+    leaks in server/proxy logs the ticket is already expired (30 s) and
+    single-use."""
+    ticket = create_ws_ticket(user.id, user.username)
+    return {"ticket": ticket}
 
 
 def _me_response_from_user(user: User) -> MeResponse:

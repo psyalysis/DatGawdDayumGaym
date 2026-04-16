@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -20,7 +21,6 @@ from .database import SessionLocal, get_db
 from .models import User
 from .schemas import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
 
-# Insecure default for local dev only — set COOKUP_JWT_SECRET in production.
 SECRET_KEY = os.environ.get(
     "COOKUP_JWT_SECRET", "dev-insecure-change-me-cookup-jwt-secret"
 )
@@ -42,7 +42,6 @@ def verify_password(plain: str, hashed: str) -> bool:
             return True
     except ValueError:
         pass
-    # Legacy: hashes created with passlib+bcrypt of raw UTF-8 (only possible if len <= 72 bytes).
     try:
         raw = plain.encode("utf-8")
         if len(raw) <= 72:
@@ -168,3 +167,35 @@ def validate_ws_token(token: str | None) -> tuple[int, str] | None:
     if reason is not None:
         return None
     return ok
+
+import time as _time
+from threading import Lock as _Lock
+
+_ws_tickets: dict[str, tuple[int, str, float]] = {}
+_ws_ticket_lock = _Lock()
+_WS_TICKET_TTL_S = 30
+
+
+def create_ws_ticket(user_id: int, username: str) -> str:
+    """Issue a single-use token (30 s) for WebSocket auth."""
+    ticket = secrets.token_urlsafe(32)
+    now = _time.time()
+    with _ws_ticket_lock:
+        stale = [k for k, (_, _, exp) in _ws_tickets.items() if exp < now]
+        for k in stale:
+            del _ws_tickets[k]
+        _ws_tickets[ticket] = (user_id, username, now + _WS_TICKET_TTL_S)
+    return ticket
+
+
+def redeem_ws_ticket(ticket: str) -> tuple[int, str] | None:
+    """Pop and validate a WS ticket.  Returns ``(user_id, username)`` or ``None``."""
+    with _ws_ticket_lock:
+        entry = _ws_tickets.pop(ticket, None) 
+    if entry is None:
+        return None
+    user_id, username, expires_at = entry
+    if _time.time() > expires_at:
+        return None
+    return (user_id, username)
+
