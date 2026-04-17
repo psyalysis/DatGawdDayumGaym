@@ -4,7 +4,9 @@
 import { authHeaders } from "./authApi.js";
 import { getApiBase } from "./apiOrigin.js";
 
-const DEFAULT_POLL_MS = 5000;
+// WS fallback poll — only runs when the WebSocket misses phase changes.
+// 15 s is more than fast enough for recovery; avoids hammering the server.
+const DEFAULT_POLL_MS = 15000;
 
 /**
  * @param {string} lobbyId

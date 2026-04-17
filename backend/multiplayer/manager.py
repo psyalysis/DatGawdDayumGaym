@@ -57,8 +57,12 @@ MP_WS_GRACE_S = 120.0
 class LobbyManager:
     def __init__(self, uploads_root: Path) -> None:
         self.uploads_root = uploads_root
-        # Single lock for in-memory lobby mutations — keeps races boring (see module docstring)
+        # Global lock — only for cross-lobby dict mutations (lobby create/delete,
+        # player_lobby mapping, auth_* maps). Hold briefly, never during broadcasts/DB.
         self._lock = asyncio.Lock()
+        # Per-lobby locks — all lobby-internal mutations (ready, cook, vote, chat, etc.)
+        # use these so different lobbies never block each other.
+        self._lobby_locks: dict[str, asyncio.Lock] = {}
         self.lobbies: dict[str, Lobby] = {}
         # player_id -> lobby_id so we don't scan every lobby on every message
         self.player_lobby: dict[str, str] = {}
@@ -73,6 +77,14 @@ class LobbyManager:
         self._grace_tasks: dict[str, asyncio.Task[None]] = {}
         # Wall-clock deadline for menu countdown / GET pending (parallel to grace tasks)
         self._grace_deadline_ts: dict[str, float] = {}
+
+    def _lobby_lock(self, lobby_id: str) -> asyncio.Lock:
+        """Get or create a per-lobby lock. Safe to call without holding _lock."""
+        lock = self._lobby_locks.get(lobby_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._lobby_locks[lobby_id] = lock
+        return lock
 
     def register_auth_session(
         self, player_id: str, user_id: int, username: str
@@ -419,15 +431,19 @@ class LobbyManager:
             if snap_dc:
                 await self.broadcast(lid_dc, {"type": "lobby_update", "lobby": snap_dc})
 
-    async def send_to(self, player_id: str, message: dict[str, Any]) -> None:
+    async def send_to_raw(self, player_id: str, raw: str) -> None:
+        """Send a pre-serialized JSON string. Use when message is already json.dumps'd."""
         ws = self.player_ws.get(player_id)
         if not ws:
             return
         try:
-            await ws.send_text(json.dumps(message))
+            await ws.send_text(raw)
         except Exception:
             # Tab closed mid-send — nothing to do
             pass
+
+    async def send_to(self, player_id: str, message: dict[str, Any]) -> None:
+        await self.send_to_raw(player_id, json.dumps(message))
 
     async def broadcast(self, lobby_id: str, message: dict[str, Any]) -> None:
         lobby = self.lobbies.get(lobby_id)
@@ -651,10 +667,10 @@ class LobbyManager:
 
     async def set_cook_duration(self, player_id: str, raw_minutes: Any) -> None:
         norm = normalize_cook_duration_min(raw_minutes)
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                return
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.LOBBY:
                 await self.send_player_error(
@@ -683,10 +699,10 @@ class LobbyManager:
 
     async def set_anonymous_voting(self, player_id: str, raw_enabled: Any) -> None:
         enabled = coerce_bool(raw_enabled, default=False)
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                return
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.LOBBY:
                 await self.send_player_error(
@@ -752,10 +768,10 @@ class LobbyManager:
         await self.disconnect(target_ok)
 
     async def player_cook_finished(self, player_id: str) -> None:
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                return
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.COOKING:
                 return
@@ -777,10 +793,10 @@ class LobbyManager:
         )
 
     async def player_ready(self, player_id: str) -> None:
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                return
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.LOBBY:
                 return
@@ -837,7 +853,7 @@ class LobbyManager:
         self._cook_tasks[lobby_id] = asyncio.create_task(cook_loop(self, lobby_id))
 
     async def record_upload(self, lobby_id: str, player_id: str) -> None:
-        async with self._lock:
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.UPLOAD:
                 return
@@ -853,11 +869,11 @@ class LobbyManager:
 
     async def slideshow_complete(self, player_id: str) -> None:
         """Slideshow done — can vote early if everyone skipped ahead."""
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            return
         bump: tuple[str, float] | None = None
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.VOTING:
                 return
@@ -900,10 +916,10 @@ class LobbyManager:
             return
 
         now = time.time()
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                return
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state not in MP_CHAT_STATES:
                 await self.send_player_error(
@@ -967,10 +983,10 @@ class LobbyManager:
         if not tid:
             await self.send_player_error(player_id, "Missing beat target.")
             return
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                return
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.VOTING:
                 await self.send_player_error(
@@ -999,11 +1015,11 @@ class LobbyManager:
         )
 
     async def cast_vote(self, player_id: str, target_player_id: str) -> None:
-        async with self._lock:
-            lobby_id = self.player_lobby.get(player_id)
-            if not lobby_id:
-                await self.send_player_error(player_id, "Not in a lobby.")
-                return
+        lobby_id = self.player_lobby.get(player_id)
+        if not lobby_id:
+            await self.send_player_error(player_id, "Not in a lobby.")
+            return
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.VOTING:
                 await self.send_player_error(player_id, "Voting is not open.")
@@ -1043,7 +1059,7 @@ class LobbyManager:
         )
 
         snap_after: dict[str, Any] | None = None
-        async with self._lock:
+        async with self._lobby_lock(lobby_id):
             lobby_snap = self.lobbies.get(lobby_id)
             if lobby_snap:
                 snap_after = lobby_snap.lobby_snapshot()
@@ -1058,7 +1074,7 @@ class LobbyManager:
     async def _maybe_finalize_voting(self, lobby_id: str) -> bool:
         """If every required voter has cast, cancel the collector and finalize. Used by cast_vote and disconnect."""
         should_finalize = False
-        async with self._lock:
+        async with self._lobby_lock(lobby_id):
             lobby = self.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.VOTING:
                 return False
@@ -1357,6 +1373,8 @@ class LobbyManager:
             if old:
                 for pid in old.players:
                     self.player_lobby.pop(pid, None)
+        # Clean up per-lobby lock to prevent memory leak
+        self._lobby_locks.pop(lobby_id, None)
         if old:
             for pid in old.players:
                 self.pop_auth_session(pid)
