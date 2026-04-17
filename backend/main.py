@@ -19,6 +19,7 @@ import random
 import re
 import shutil
 import tempfile
+import time as _time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -35,13 +36,12 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, ORJSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .auth import create_ws_ticket, get_current_user, login_user, register_user
+from .auth import create_ws_ticket, get_current_user, invalidate_user_cache, login_user, register_user
 from .beat_upload_trim import trim_beat_upload_to_ogg
 from .database import get_db, init_db
 from .generator import generate_kit_light
@@ -185,18 +185,34 @@ def _static_cache_control(path: str) -> str | None:
     return None
 
 
-class StaticCacheControlMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        if request.method != "GET":
-            return response
-        path = request.url.path
-        if path.startswith("/api/"):
-            return response
-        cc = _static_cache_control(path)
-        if cc:
-            response.headers["Cache-Control"] = cc
-        return response
+class StaticCacheControlMiddleware:
+    """Pure ASGI middleware — avoids BaseHTTPMiddleware's TaskGroup overhead."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+        # Only inject on GET, skip API paths
+        should_inject = method == "GET" and not path.startswith("/api/")
+        cc = _static_cache_control(path) if should_inject else None
+
+        if cc is None:
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start" and cc:
+                headers = list(message.get("headers", []))
+                headers.append((b"cache-control", cc.encode("latin-1")))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 app.add_middleware(StaticCacheControlMiddleware)
@@ -272,8 +288,16 @@ async def get_dev_site_stats(
 @app.get("/api/supporters")
 def get_supporters(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Public list of supporter display-name keys (lowercase); used for hearts in UI."""
+    global _supporters_cache
+    now = _time.time()
+    if _supporters_cache is not None:
+        exp, cached = _supporters_cache
+        if now < exp:
+            return cached
     rows = db.query(Supporter).order_by(Supporter.name_key).all()
-    return {"names": [r.name_key for r in rows]}
+    result = {"names": [r.name_key for r in rows]}
+    _supporters_cache = (now + _SUPPORTERS_TTL_S, result)
+    return result
 
 
 class SupporterAddBody(BaseModel):
@@ -286,6 +310,7 @@ def post_dev_supporter(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    global _supporters_cache
     _require_dev_stats_user(user)
     key = _normalize_supporter_name(body.name)
     db.add(Supporter(name_key=key))
@@ -294,6 +319,7 @@ def post_dev_supporter(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Already exists.")
+    _supporters_cache = None  # bust cache
     return {"ok": True, "name_key": key}
 
 
@@ -303,6 +329,7 @@ def delete_dev_supporter(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    global _supporters_cache
     _require_dev_stats_user(user)
     key = _normalize_supporter_name(name)
     row = db.query(Supporter).filter(Supporter.name_key == key).first()
@@ -310,6 +337,7 @@ def delete_dev_supporter(
         raise HTTPException(status_code=404, detail="Not found.")
     db.delete(row)
     db.commit()
+    _supporters_cache = None  # bust cache
     return {"ok": True}
 
 
@@ -386,8 +414,25 @@ async def post_mp_abandon_reconnect(
     return {"ok": True}
 
 
+# ---- In-memory response caches (read-heavy, write-rare) ----
+_leaderboard_cache: tuple[float, list[LeaderboardEntry]] | None = None
+_LEADERBOARD_TTL_S = 30.0
+
+_supporters_cache: tuple[float, dict[str, Any]] | None = None
+_SUPPORTERS_TTL_S = 60.0
+
+_lobbies_cache: tuple[float, list[dict[str, Any]]] | None = None
+_LOBBIES_TTL_S = 2.0
+
+
 @app.get("/leaderboard", response_model=list[LeaderboardEntry])
 def get_leaderboard(db: Session = Depends(get_db)) -> list[LeaderboardEntry]:
+    global _leaderboard_cache
+    now = _time.time()
+    if _leaderboard_cache is not None:
+        exp, cached = _leaderboard_cache
+        if now < exp:
+            return cached
     rows = db.query(User).order_by(desc(User.wins), User.username).limit(50).all()
     out: list[LeaderboardEntry] = []
     for r in rows:
@@ -401,14 +446,23 @@ def get_leaderboard(db: Session = Depends(get_db)) -> list[LeaderboardEntry]:
                 rank_index=rank_index_for_wins(r.wins),
             )
         )
+    _leaderboard_cache = (now + _LEADERBOARD_TTL_S, out)
     return out
 
 
 @app.get("/api/lobbies")
 async def list_public_lobbies(request: Request) -> list[dict[str, Any]]:
     """Joinable public lobbies (pre-game, not full)."""
+    global _lobbies_cache
+    now = _time.time()
+    if _lobbies_cache is not None:
+        exp, cached = _lobbies_cache
+        if now < exp:
+            return cached
     manager: LobbyManager = request.app.state.manager
-    return await manager.public_lobby_list()
+    result = await manager.public_lobby_list()
+    _lobbies_cache = (now + _LOBBIES_TTL_S, result)
+    return result
 
 
 @app.get(

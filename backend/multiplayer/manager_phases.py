@@ -45,7 +45,7 @@ def all_players_finished_slideshow(lobby: Lobby) -> bool:
 
 async def cook_loop(manager: LobbyManager, lobby_id: str) -> None:
     duration_s = COOK_DURATION_S
-    async with manager._lock:
+    async with manager._lobby_lock(lobby_id):
         lobby = manager.lobbies.get(lobby_id)
         if not lobby:
             return
@@ -58,17 +58,21 @@ async def cook_loop(manager: LobbyManager, lobby_id: str) -> None:
 
     early_all_done = False
     try:
-        # Yeah we broadcast every second — the HUD wants a live number. Sorry CPU :)
+        # Broadcast every SYNC_INTERVAL_S seconds (not every 1 s — client runs its own
+        # local countdown from cook_deadline_ts; these are drift-correction syncs).
+        SYNC_INTERVAL_S = 5
         for remaining in range(duration_s, -1, -1):
-            await manager.broadcast(
-                lobby_id,
-                {
-                    "type": "timer_update",
-                    "phase": "cooking",
-                    "remaining_s": remaining,
-                },
-            )
-            async with manager._lock:
+            # Broadcast on first tick, last tick, and every SYNC_INTERVAL_S seconds.
+            if remaining == duration_s or remaining == 0 or remaining % SYNC_INTERVAL_S == 0:
+                await manager.broadcast(
+                    lobby_id,
+                    {
+                        "type": "timer_update",
+                        "phase": "cooking",
+                        "remaining_s": remaining,
+                    },
+                )
+            async with manager._lobby_lock(lobby_id):
                 lobby = manager.lobbies.get(lobby_id)
                 if not lobby or lobby.state != LobbyState.COOKING:
                     return
@@ -106,7 +110,7 @@ async def cook_loop(manager: LobbyManager, lobby_id: str) -> None:
         )
 
     upload_deadline_ts = time.time() + UPLOAD_PHASE_S
-    async with manager._lock:
+    async with manager._lobby_lock(lobby_id):
         lobby = manager.lobbies.get(lobby_id)
         if not lobby or lobby.state != LobbyState.COOKING:
             return
@@ -135,7 +139,7 @@ async def upload_phase(
 ) -> None:
     try:
         while time.time() < deadline_ts:
-            async with manager._lock:
+            async with manager._lobby_lock(lobby_id):
                 lobby = manager.lobbies.get(lobby_id)
                 if not lobby or lobby.state != LobbyState.UPLOAD:
                     return
@@ -154,7 +158,7 @@ async def upload_phase(
 
 
 async def begin_voting(manager: LobbyManager, lobby_id: str) -> None:
-    async with manager._lock:
+    async with manager._lobby_lock(lobby_id):
         lobby = manager.lobbies.get(lobby_id)
         if not lobby:
             return
@@ -201,7 +205,7 @@ async def begin_voting(manager: LobbyManager, lobby_id: str) -> None:
 async def vote_collection_loop(manager: LobbyManager, lobby_id: str) -> None:
     try:
         while True:
-            async with manager._lock:
+            async with manager._lobby_lock(lobby_id):
                 lobby = manager.lobbies.get(lobby_id)
                 if not lobby or lobby.state != LobbyState.VOTING:
                     return
@@ -211,14 +215,14 @@ async def vote_collection_loop(manager: LobbyManager, lobby_id: str) -> None:
                 break
             await asyncio.sleep(0.2)
 
-        async with manager._lock:
+        async with manager._lobby_lock(lobby_id):
             lobby = manager.lobbies.get(lobby_id)
             if not lobby or lobby.state != LobbyState.VOTING:
                 return
             unlock = lobby.votes_unlock_at or time.time()
         deadline = unlock + VOTING_COLLECT_S
         while time.time() < deadline:
-            async with manager._lock:
+            async with manager._lobby_lock(lobby_id):
                 lobby = manager.lobbies.get(lobby_id)
                 if not lobby or lobby.state != LobbyState.VOTING:
                     return
@@ -242,7 +246,7 @@ async def finalize_results(manager: LobbyManager, lobby_id: str) -> None:
     winner_user_ids: list[int] = []
     payload: dict[str, Any] | None = None
     winners: list[str] = []
-    async with manager._lock:
+    async with manager._lobby_lock(lobby_id):
         lobby = manager.lobbies.get(lobby_id)
         if not lobby or lobby.state != LobbyState.VOTING:
             return
@@ -270,10 +274,11 @@ async def finalize_results(manager: LobbyManager, lobby_id: str) -> None:
 
         await asyncio.to_thread(_persist_wins)
 
-    async with manager._lock:
+    async with manager._lobby_lock(lobby_id):
         lobby_after = manager.lobbies.get(lobby_id)
         if lobby_after:
             for wid in winners:
                 pl = lobby_after.players.get(wid)
                 if pl is not None:
                     pl.wins += 1
+

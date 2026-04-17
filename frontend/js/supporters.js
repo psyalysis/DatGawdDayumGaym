@@ -18,7 +18,8 @@ let loadedFromApi = false;
 /** @type {ReturnType<typeof setInterval> | null} */
 let pollId = null;
 
-const POLL_MS = 90_000;
+// Supporter list changes rarely — poll every 5 min (was 90 s) to reduce server load.
+const POLL_MS = 300_000;
 
 /**
  * @param {() => void} cb

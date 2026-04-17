@@ -7,7 +7,9 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import time as _time
 from datetime import datetime, timedelta, timezone
+from threading import Lock as _Lock
 from typing import Annotated
 
 import bcrypt
@@ -28,6 +30,39 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 7
 
 security = HTTPBearer(auto_error=False)
+
+# ---------------------------------------------------------------------------
+# User cache — avoid a DB query on every authenticated request.
+# JWT already carries (user_id, username). We cache the full User object for
+# 30 s so win-count etc. stays fresh without hammering the DB.
+# ---------------------------------------------------------------------------
+_USER_CACHE_TTL_S = 30.0
+_user_cache: dict[int, tuple[User, float]] = {}
+_user_cache_lock = _Lock()
+
+
+def _get_cached_user(user_id: int) -> User | None:
+    """Return cached User if still fresh, else None."""
+    with _user_cache_lock:
+        entry = _user_cache.get(user_id)
+    if entry is None:
+        return None
+    user, expires_at = entry
+    if _time.time() > expires_at:
+        return None
+    return user
+
+
+def _put_cached_user(user: User) -> None:
+    with _user_cache_lock:
+        _user_cache[user.id] = (user, _time.time() + _USER_CACHE_TTL_S)
+
+
+def invalidate_user_cache(*user_ids: int) -> None:
+    """Drop cache entries after a write (win increment, profile change, etc.)."""
+    with _user_cache_lock:
+        for uid in user_ids:
+            _user_cache.pop(uid, None)
 
 
 def _password_key_bytes(plain: str) -> bytes:
@@ -115,6 +150,8 @@ def increment_wins_for_users(db: Session, user_ids: list[int]) -> None:
         if u is not None:
             u.wins += 1
     db.commit()
+    # Bust cache so subsequent /me or leaderboard reads see updated wins.
+    invalidate_user_cache(*seen)
 
 
 def get_current_user(
@@ -128,9 +165,14 @@ def get_current_user(
         uid = int(payload["sub"])
     except (JWTError, KeyError, ValueError, TypeError):
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    # Fast path: serve from cache (avoids a DB roundtrip on every request).
+    cached = _get_cached_user(uid)
+    if cached is not None:
+        return cached
     user = get_user_by_id(db, uid)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found.")
+    _put_cached_user(user)
     return user
 
 
@@ -156,6 +198,7 @@ def try_validate_ws_token(
             return None, "user_not_found"
         if user.username != un:
             return None, "username_mismatch"
+        _put_cached_user(user)
         return (uid, user.username), None
     finally:
         db.close()
@@ -168,8 +211,6 @@ def validate_ws_token(token: str | None) -> tuple[int, str] | None:
         return None
     return ok
 
-import time as _time
-from threading import Lock as _Lock
 
 _ws_tickets: dict[str, tuple[int, str, float]] = {}
 _ws_ticket_lock = _Lock()
@@ -191,7 +232,7 @@ def create_ws_ticket(user_id: int, username: str) -> str:
 def redeem_ws_ticket(ticket: str) -> tuple[int, str] | None:
     """Pop and validate a WS ticket.  Returns ``(user_id, username)`` or ``None``."""
     with _ws_ticket_lock:
-        entry = _ws_tickets.pop(ticket, None) 
+        entry = _ws_tickets.pop(ticket, None)
     if entry is None:
         return None
     user_id, username, expires_at = entry
