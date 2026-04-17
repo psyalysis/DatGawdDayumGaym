@@ -368,6 +368,8 @@ class LobbyManager:
 
         Pre-game (waiting / lobby / generating): treat like an intentional leave — full disconnect so
         players can browse lobbies without a reconnect window.
+
+        Results: match is over — same as pre-game (no grace / no resume window).
         """
         if self.player_ws.get(player_id) is not ws:
             return
@@ -382,6 +384,7 @@ class LobbyManager:
                     LobbyState.WAITING,
                     LobbyState.LOBBY,
                     LobbyState.GENERATING,
+                    LobbyState.RESULTS,
                 )
 
         if pre_game_drop:

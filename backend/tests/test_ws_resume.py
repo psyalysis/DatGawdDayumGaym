@@ -250,7 +250,7 @@ def test_pending_reconnect_cleared_after_resume(tmp_path) -> None:
 
 
 def test_pending_reconnect_results_soft_detach(tmp_path) -> None:
-    """Results-phase soft drop still offers reconnect (anti–lobby-hop)."""
+    """Results-phase socket drop is a full disconnect — no reconnect grace."""
 
     async def run() -> None:
         mgr = LobbyManager(tmp_path)
@@ -268,9 +268,9 @@ def test_pending_reconnect_results_soft_detach(tmp_path) -> None:
 
         await mgr.detach_connection(p1, ws1)  # type: ignore[arg-type]
 
-        pending = mgr.pending_reconnect_for_user(23)
-        assert pending is not None
-        assert pending["lobby_id"] == lid
+        assert mgr.pending_reconnect_for_user(23) is None
+        assert p1 not in mgr.player_lobby
+        assert lid not in mgr.lobbies
 
     asyncio.run(run())
 

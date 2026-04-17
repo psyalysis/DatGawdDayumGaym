@@ -4,6 +4,8 @@
 
 export const RANK_BASELINE_KEY = "cookup_match_rank_index";
 export const RANK_PENDING_KEY = "cookup_pending_rank_up";
+/** Last self rank key shown after leaving lobby — hide repeat badge on re-entry if unchanged. */
+export const LOBBY_LAST_SELF_RANK_KEY = "cookup_lobby_last_self_rank_key";
 
 export function escapeHtml(s) {
   return String(s)

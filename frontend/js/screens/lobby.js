@@ -11,7 +11,11 @@ import {
   showKickedFromMatchToast,
 } from "../mpPresenceToast.js";
 import { mountAuthCornerLeave } from "../authCorner.js";
-import { escapeHtml, rankBadgeHtml } from "../rankUi.js";
+import {
+  escapeHtml,
+  LOBBY_LAST_SELF_RANK_KEY,
+  rankBadgeHtml,
+} from "../rankUi.js";
 import { supporterDisplayNameInnerHtml } from "../supporters.js";
 import {
   clearMpChatSession,
@@ -28,8 +32,16 @@ import { mountCookScreen } from "./cook.js";
  * @param {string} selfId
  * @param {null | { step?: number; total?: number; message?: string; percent?: number }} kitProgress
  * @param {boolean} settingsPanelOpen
+ * @param {boolean} hideSelfRankBadge — omit self row badge when re-entering lobby at same rank
  */
-function renderLobby(root, lobby, selfId, kitProgress, settingsPanelOpen) {
+function renderLobby(
+  root,
+  lobby,
+  selfId,
+  kitProgress,
+  settingsPanelOpen,
+  hideSelfRankBadge,
+) {
   const players = lobby.players || [];
   const hostId = lobby.host_id || "";
   const isHost = Boolean(selfId && hostId && selfId === hostId);
@@ -63,11 +75,13 @@ function renderLobby(root, lobby, selfId, kitProgress, settingsPanelOpen) {
         kickSlot !== ""
           ? "lobby-row-name-wrap lobby-row-name-wrap--kick-hover"
           : "lobby-row-name-wrap";
+      const rankHtml =
+        isSelf && hideSelfRankBadge ? "" : rankBadgeHtml(p.rank);
       return `
     <div class="lobby-row${kickSlot !== "" ? " lobby-row--kickable" : ""}">
       <div class="${nameWrapClass}">
         ${kickSlot}
-        <span class="lobby-name name-with-rank">${rankBadgeHtml(p.rank)}${supporterDisplayNameInnerHtml(p.name)}${p.id === hostId ? " · host" : ""}</span>
+        <span class="lobby-name name-with-rank">${rankHtml}${supporterDisplayNameInnerHtml(p.name)}${p.id === hostId ? " · host" : ""}</span>
       </div>
       <span class="lobby-ready">${p.ready ? "✔" : ""}</span>
     </div>
@@ -184,13 +198,36 @@ export function mountLobbyScreen(root, ctx) {
   let intentionalLeave = false;
   /** Persists across re-renders when the host expands/collapses settings */
   let lobbySettingsOpen = false;
+  /** Set once per mount from sessionStorage vs first snapshot — stable across lobby_update paints. */
+  let hideSelfRankBadge = false;
+  let hideSelfRankBadgeInit = false;
 
   const paint = () => {
     const prevSettings = root.querySelector("details.lobby-settings");
     if (prevSettings instanceof HTMLDetailsElement) {
       lobbySettingsOpen = prevSettings.open;
     }
-    renderLobby(root, lobby, playerId, kitProgress, lobbySettingsOpen);
+    if (!hideSelfRankBadgeInit) {
+      const sid = String(playerId || "");
+      const pl = lobby.players || [];
+      const self = pl.find((p) => String(p.id) === sid);
+      const key = self?.rank?.key ? String(self.rank.key).trim() : "";
+      const initialLast = sessionStorage.getItem(LOBBY_LAST_SELF_RANK_KEY);
+      hideSelfRankBadge =
+        initialLast != null &&
+        initialLast !== "" &&
+        key !== "" &&
+        initialLast === key;
+      hideSelfRankBadgeInit = true;
+    }
+    renderLobby(
+      root,
+      lobby,
+      playerId,
+      kitProgress,
+      lobbySettingsOpen,
+      hideSelfRankBadge,
+    );
     syncLobbyContext(lobby, kitProgress);
   };
 
@@ -407,6 +444,17 @@ export function mountLobbyScreen(root, ctx) {
 
   return () => {
     intentionalLeave = true;
+    const sid = String(playerId || "");
+    const pl = lobby.players || [];
+    const self = pl.find((p) => String(p.id) === sid);
+    const rk = self?.rank?.key ? String(self.rank.key).trim() : "";
+    if (rk) {
+      try {
+        sessionStorage.setItem(LOBBY_LAST_SELF_RANK_KEY, rk);
+      } catch {
+        /* ignore */
+      }
+    }
     if (!preserveWs) {
       clearMpChatSession();
     }

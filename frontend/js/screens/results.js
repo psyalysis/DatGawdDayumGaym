@@ -6,12 +6,9 @@ import { getApiBase } from "../apiOrigin.js";
 import { setAppErrorContext } from "../errorToast.js";
 import { mountAuthCornerLeave } from "../authCorner.js";
 import { RANK_BASELINE_KEY, RANK_PENDING_KEY } from "../rankUi.js";
-import {
-  dismissServerRestartingWait,
-  showServerRestartingWait,
-} from "../serverRestartOverlay.js";
+import { dismissServerRestartingWait } from "../serverRestartOverlay.js";
 import { applyMatchResyncFromPayload } from "../mpMatchResync.js";
-import { runMpWsReconnect } from "../mpReconnect.js";
+import { abandonReconnectGrace } from "../mpReconnectPending.js";
 import { clearMpSeat, saveMpSeat } from "../mpSeatStorage.js";
 import {
   clearMpChatSession,
@@ -339,27 +336,14 @@ export function mountResultsScreen(root, ctx) {
     }
   };
 
-  const onResultsSocketClose = (ev) => {
+  const onResultsSocketClose = () => {
     if (teardownClose || preserveWs) return;
-    showServerRestartingWait();
     dismissServerRestartingWait();
-    void runMpWsReconnect(ev, {
-      ctx,
-      intentionalLeave: () => teardownClose,
-      preserveWs: () => preserveWs,
-      onReplaceSocket: (nw) => {
-        ctx.mpWs = nw;
-        unmountMpChat();
-        unmountMpChat = mountMpChat({
-          ws: nw,
-          getWs: () => ctx.mpWs,
-          playerId,
-          continueSession: true,
-        });
-        nw.onmessage = onResultsSocketMessage;
-        nw.addEventListener("close", onResultsSocketClose, { once: true });
-      },
-    });
+    clearMpSeat();
+    void abandonReconnectGrace();
+    unmountMpChat();
+    unmountMpChat = () => {};
+    ctx.mpWs = null;
   };
 
   if (ctx.mpWs instanceof WebSocket) {
