@@ -3269,3 +3269,107 @@ button.auth-corner-card.auth-corner-menu-toggle {
 .rank-up-dismiss {
   min-width: 7rem;
 }
+
+/* ── Volume widget ─────────────────────────────────────────────────────────── */
+
+.vol-widget {
+  position: fixed;
+  top: calc(0.75rem + 76px + 0.4rem);
+  left: 0.75rem;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+}
+
+.vol-trigger {
+  position: relative;
+  z-index: 1;
+}
+
+.vol-panel {
+  position: absolute;
+  left: calc(100% + 0.5rem);
+  top: 50%;
+  transform: translateY(-50%) translateX(-6px);
+  display: flex;
+  align-items: center;
+  padding: 0 0.85rem;
+  height: 76px;
+  background: rgba(8, 6, 6, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s cubic-bezier(0.34, 1.2, 0.55, 1);
+  white-space: nowrap;
+}
+
+.vol-widget.vol-open .vol-panel,
+.vol-widget:focus-within .vol-panel {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(-50%) translateX(0);
+}
+
+.vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 110px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  outline: none;
+  cursor: pointer;
+  accent-color: var(--red);
+}
+
+.vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--red);
+  cursor: pointer;
+  transition:
+    transform 0.1s ease,
+    background 0.1s ease;
+}
+
+.vol-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+  background: var(--red-bright);
+}
+
+.vol-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
+  background: var(--red);
+  cursor: pointer;
+}
+
+/* Speaker icon states */
+.vol-icon-wave1,
+.vol-icon-wave2 {
+  transition: opacity 0.12s ease;
+}
+
+.vol-icon-mute {
+  display: none;
+}
+
+[data-vol-level="low"] .vol-icon-wave2 {
+  opacity: 0;
+}
+
+[data-vol-level="mute"] .vol-icon-wave1,
+[data-vol-level="mute"] .vol-icon-wave2 {
+  display: none;
+}
+
+[data-vol-level="mute"] .vol-icon-mute {
+  display: block;
+}

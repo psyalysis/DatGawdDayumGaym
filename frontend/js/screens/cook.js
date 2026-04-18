@@ -24,6 +24,7 @@ import {
   notifyMpPlayerLeave,
 } from "../mpPresenceToast.js";
 import { playSfxMinor } from "../sfx.js";
+import { getVolume } from "../volume.js";
 import {
   fetchKitManifest,
   KIT_SOUND_FILE_EXT,
@@ -502,6 +503,7 @@ function setupCookUI(root, ctx, sounds, phaseOpts) {
     const audio = document.createElement("audio");
     audio.id = `mp-audio-${key}`;
     audio.preload = "auto";
+    audio.volume = getVolume();
     bindWaveformPlayback(key, waveWrap, audio);
     card.append(head, waveWrap, audio);
     return card;

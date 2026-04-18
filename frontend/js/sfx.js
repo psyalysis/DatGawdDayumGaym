@@ -2,6 +2,7 @@
  * Little UI bleeps. Local: ../sfx/; production: CDN base + /sfx/ (see meta beat-battle-cdn).
  */
 import { getCdnBase } from "./apiOrigin.js";
+import { getVolume } from "./volume.js";
 
 const dir = new URL("../sfx/", import.meta.url);
 
@@ -27,7 +28,7 @@ function audioFor(filename) {
 function playFile(filename, volume = 0.88) {
   try {
     const a = audioFor(filename);
-    a.volume = volume;
+    a.volume = volume * getVolume();
     a.currentTime = 0;
     void a.play().catch(() => {});
   } catch {

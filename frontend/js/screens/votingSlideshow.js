@@ -34,6 +34,7 @@ import {
 } from "../mpMatchRoster.js";
 import { fetchMatchSync, pollMatchSync } from "../mpMatchSync.js";
 import { playSfxMinor } from "../sfx.js";
+import { getVolume } from "../volume.js";
 import { mountResultsScreen } from "./results.js";
 import { mountVoteSelectionScreen } from "./voteSelection.js";
 
@@ -514,6 +515,7 @@ export function mountVotingSlideshowScreen(root, ctx) {
 
       wsur.on("ready", () => {
         if (!wsur || slideClosed) return;
+        wsur.setVolume(getVolume());
         wsur.play();
 
         if (!clipped) {
@@ -693,6 +695,11 @@ export function mountVotingSlideshowScreen(root, ctx) {
   ctx.mpWs.addEventListener("close", onVoteSlideSocketClose, { once: true });
   ctx.mpWs.onmessage = onSocket;
 
+  const onVolumeChange = (/** @type {CustomEvent} */ ev) => {
+    activeWsur?.setVolume(ev.detail);
+  };
+  window.addEventListener("bb-volume", onVolumeChange);
+
   if (beats.length === 0) {
     goVote();
   } else {
@@ -700,6 +707,7 @@ export function mountVotingSlideshowScreen(root, ctx) {
   }
 
   return () => {
+    window.removeEventListener("bb-volume", onVolumeChange);
     if (slideDeadlineInterval != null) {
       clearInterval(slideDeadlineInterval);
       slideDeadlineInterval = null;

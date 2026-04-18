@@ -28,6 +28,45 @@
   </head>
   <body>
     <div id="app-root" class="app-root"></div>
+      <div class="vol-widget" id="vol-widget" data-vol-level="high">
+        <button
+          type="button"
+          class="corner-social-trigger vol-trigger"
+          id="vol-trigger"
+          data-corner-tooltip="Volume"
+          aria-label="Volume: 100%"
+        >
+          <svg
+            class="vol-icon corner-social-icon"
+            width="32"
+            height="32"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <path class="vol-icon-speaker" d="M11 5L6 9H3v6h3l5 4V5z" fill="currentColor" />
+            <path class="vol-icon-wave1" d="M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none" />
+            <path class="vol-icon-wave2" d="M19.07 4.93a10 10 0 0 1 0 14.14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none" />
+            <g class="vol-icon-mute" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <line x1="14" y1="9" x2="20" y2="15" />
+              <line x1="20" y1="9" x2="14" y2="15" />
+            </g>
+          </svg>
+        </button>
+        <div class="vol-panel" role="group" aria-label="Volume slider">
+          <input
+            type="range"
+            class="vol-slider"
+            id="vol-slider"
+            min="0"
+            max="100"
+            value="100"
+            step="1"
+            aria-label="Master volume"
+          />
+        </div>
+      </div>
     <div
       class="corner-social-stack corner-social-menu"
       data-corner-tooltip="Links &amp; credits"

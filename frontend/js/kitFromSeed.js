@@ -3,6 +3,7 @@
  */
 
 import { getCdnBase } from "./apiOrigin.js";
+import { getVolume } from "./volume.js";
 
 const MANIFEST_STORAGE_KEY = "bb_kit_manifest_v6";
 const TARGET_RATE = 44100;
@@ -438,7 +439,10 @@ export async function buildKitFromSeed({ seed, spice, apiBase, onProgress }) {
 export function playBufferOnce(ac, buffer) {
   const src = ac.createBufferSource();
   src.buffer = buffer;
-  src.connect(ac.destination);
+  const gain = ac.createGain();
+  gain.gain.value = getVolume();
+  src.connect(gain);
+  gain.connect(ac.destination);
   void ac.resume().catch(() => {});
   src.start(0);
 }

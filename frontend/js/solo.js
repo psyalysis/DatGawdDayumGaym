@@ -13,6 +13,7 @@ import {
 } from "./kitFromSeed.js";
 import { mountKitLayoutShell } from "./kitGridLayout.js";
 import { playSfxMajor, playSfxMinor, playSfxOn } from "./sfx.js";
+import { getVolume } from "./volume.js";
 import { runSynthReveal } from "./synthReveal.js";
 
 const SOUND_KEYS = [
@@ -169,6 +170,7 @@ export function mountSoloScreen(root, ctx) {
     const audio = document.createElement("audio");
     audio.id = `audio-${key}`;
     audio.preload = "auto";
+    audio.volume = getVolume();
 
     bindWaveformPlayback(key, waveWrap, audio);
 
